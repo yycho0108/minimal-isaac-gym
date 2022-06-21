@@ -1,8 +1,12 @@
+from typing import Union, Dict
+
 from env import Cartpole
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+th=torch
 
 from torch.distributions import Categorical
 
@@ -71,6 +75,25 @@ class PPO_Discrete:
 
         self.net = Net(self.env.num_obs, self.act_space).to(args.sim_device)
         self.optim = torch.optim.Adam(self.net.parameters(), lr=self.lr)
+        self.episode_rewards = th.zeros(self.args.num_envs,
+                dtype=th.float32,
+                requires_grad=False,
+                device=args.sim_device)
+        #self.register_buffer('episode_rewards',
+        #        th.zeros(self.args.num_envs, dtype=th.float32, requires_grad=False))
+
+    def save(self, path:str):
+        th.save({
+            'net' : self.net.state_dict(),
+            'opt' : self.optim.state_dict()
+            }, path)
+
+    def load(self, ckpt:Union[Dict[str,th.Tensor], str]):
+        if not isinstance(ckpt, dict):
+            return self.load(th.load(ckpt))
+        self.net.load_state_dict(ckpt['net'])
+        if hasattr(self, 'optim') and 'opt' in ckpt:
+            self.optim.load_state_dict(ckpt['opt'])
 
     def make_data(self):
         # organise data and make batch
@@ -149,9 +172,16 @@ class PPO_Discrete:
 
         self.env.step(action)
         next_obs, reward, done = self.env.obs_buf.clone(), self.env.reward_buf.clone(), self.env.reset_buf.clone()
+        done = done.to(th.bool)
+        if done.any():
+            episode_rewards = self.episode_rewards[done]
+        else:
+            episode_rewards = []
+        self.episode_rewards += reward
+        self.episode_rewards.masked_fill_(done, 0)
         self.env.reset()
 
-        self.data.append((obs, action, reward, next_obs, log_prob, 1 - done))
+        self.data.append((obs, action, reward, next_obs, log_prob, 1 - done.float()))
 
         self.score += torch.mean(reward.float()).item() / self.num_eval_freq
 
@@ -166,3 +196,4 @@ class PPO_Discrete:
             self.score = 0
 
         self.run_step += 1
+        return episode_rewards

@@ -1,6 +1,7 @@
 from isaacgym import gymapi
 from isaacgym import gymtorch
 from isaacgym.torch_utils import *
+from typing import Optional
 
 import torch
 
@@ -49,7 +50,8 @@ class Cartpole:
         self.sim = self.gym.create_sim(args.compute_device_id, args.graphics_device_id, gymapi.SIM_PHYSX, sim_params)
 
         # initialise envs and state tensors
-        self.envs, self.num_dof = self.create_envs()
+        out = self.create_envs()
+        self.envs, self.cams, self.cam_tensors, self.num_dof = out
         self.dof_states = self.get_states_tensor()
         self.dof_pos = self.dof_states.view(self.args.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_states.view(self.args.num_envs, self.num_dof, 2)[..., 1]
@@ -96,6 +98,8 @@ class Cartpole:
 
         # generate environments
         envs = []
+        cams = []
+        cam_tensors = []
         print(f'Creating {self.args.num_envs} environments.')
         for i in range(self.args.num_envs):
             # create env
@@ -105,8 +109,27 @@ class Cartpole:
             cartpole_handle = self.gym.create_actor(env, cartpole_asset, pose, "cartpole", i, 1, 0)
             self.gym.set_actor_dof_properties(env, cartpole_handle, dof_props)
 
+            # add camera
+            cam_props = gymapi.CameraProperties()
+            cam_props.width = 128
+            cam_props.height = 128
+            cam_props.enable_tensors = True
+            camera = self.gym.create_camera_sensor(env, cam_props)
+            self.gym.set_camera_location(camera, env, 
+                    gymapi.Vec3(3, 0.0, 2),
+                    # gymapi.Vec3(pose.p.x,pose.p.y,pose.p.z+5.0),
+                    # pose.p
+                    gymapi.Vec3(-1,0,0)
+                    )
+
+            cam_tensor = gymtorch.wrap_tensor(
+                    self.gym.get_camera_image_gpu_tensor(
+                        self.sim, env, camera, gymapi.IMAGE_COLOR
+                        ))
             envs.append(env)
-        return envs, num_dof
+            cams.append(camera)
+            cam_tensors.append(cam_tensor)
+        return envs, cams, cam_tensors, num_dof
 
     def create_viewer(self):
         # create viewer for debugging (looking at the center of environment)
@@ -168,10 +191,15 @@ class Cartpole:
         self.gym.simulate(self.sim)
         self.gym.fetch_results(self.sim, True)
 
-    def render(self):
+    def render(self, mode:Optional[str]=None):
         # update viewer
         self.gym.step_graphics(self.sim)
-        self.gym.draw_viewer(self.viewer, self.sim, True)
+        if mode == 'human':
+            self.gym.draw_viewer(self.viewer, self.sim, True)
+        elif mode == 'rgb_array':
+            self.gym.render_all_camera_sensors(self.sim)
+            self.gym.start_access_image_tensors(self.sim)
+            return [t.cpu().numpy() for t in self.cam_tensors]
         self.gym.sync_frame_time(self.sim)
 
     def exit(self):
